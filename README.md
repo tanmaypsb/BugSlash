@@ -2,6 +2,8 @@
 
 [![Typing SVG](https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=20&pause=1200&color=5FBFF7&center=true&vCenter=true&width=800&height=45&lines=Multi-Language+Bug+Detection+%7C+Verification+%7C+Automated+Fixing;Python+%7C+JavaScript+%7C+TypeScript+%7C+C%2FC%2B%2B+%7C+Java+%7C+Go+%7C+Rust;Detect+%E2%86%92+Verify+%E2%86%92+Fix+%E2%86%92+Re-Analyze+%E2%86%92+Verify)](https://git.io/typing-svg)
 
+**Live:** [bug-slash.vercel.app](https://bug-slash.vercel.app)
+
 ### Multi-Language Intelligent Bug Detection, Verification & Automated Fixing System
 
 BUGSLASH is a multi-language static analysis and verification platform designed to detect software defects across different programming languages, normalize analyzer output into a common model, verify findings with additional evidence, and provide a foundation for automated bug fixing.

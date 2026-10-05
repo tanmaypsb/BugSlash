@@ -774,6 +774,12 @@ When adding a new language:
 
 # License
 
-This project is currently developed as a college software-engineering project.
+Copyright © 2026 Tanmay Pratap Singh. All rights reserved.
 
-License information will be added as the project is prepared for broader distribution.
+BUGSLASH is publicly available for viewing and educational/reference purposes.
+
+The source code may not be copied, modified, redistributed, republished, or used in other projects without explicit permission from the author.
+
+This repository is **source-available, not open source**.
+
+For permission to use, modify, or redistribute this project, please contact the author. 

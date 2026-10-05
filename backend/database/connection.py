@@ -1,13 +1,17 @@
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
-DATABASE_URL = "postgresql+psycopg://bugslash_user:the_COGNACEVASNORK1@localhost:5432/bugslash_db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set")
 
 engine = create_engine(
     DATABASE_URL,
     echo=False,
 )
-
 
 SessionLocal = sessionmaker(
     bind=engine,
@@ -15,8 +19,10 @@ SessionLocal = sessionmaker(
     autocommit=False,
 )
 
+
 class Base(DeclarativeBase):
     pass
+
 
 def get_db():
     db = SessionLocal()
@@ -24,4 +30,4 @@ def get_db():
     try:
         yield db
     finally:
-        db.close()    
+        db.close()

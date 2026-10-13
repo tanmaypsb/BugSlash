@@ -30,7 +30,7 @@ app = FastAPI(
 # CORS is not authentication / security
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "https://bug-slash.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,8 +1,8 @@
 import json
-import subprocess
 from pathlib import Path
 
 from .finding import Finding
+from models.analyzer_error import parse_json_output, run_analyzer
 
 
 class PythonAnalyzer:
@@ -13,38 +13,27 @@ class PythonAnalyzer:
     def analyze(self, file_path: str) -> list[Finding]:
         file = Path(file_path)
 
-        result = subprocess.run(
-            [
-                "ruff",
-                "check",
-                str(file),
-                "--output-format",
-                "json",
-            ],
-            capture_output=True,
-            text=True,
+        result = run_analyzer(
+            self.name,
+            ["ruff", "check", str(file), "--output-format", "json"],
+            timeout=30,
+            expected=(0, 1),
         )
-
-        if not result.stdout.strip():
-            return []
-
-        try:
-            issues = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return []
+        issues = parse_json_output(self.name, result.stdout, expected_type=list)
 
         findings = []
 
         for issue in issues:
+            code = issue.get("code") or "unknown"
             findings.append(
                 Finding(
                     language="python",
                     file=str(file),
-                    line=issue["location"]["row"],
-                    column=issue["location"]["column"],
-                    category=issue["code"],
-                    severity=self._get_severity(issue["code"]),
-                    message=issue["message"],
+                    line=issue.get("location", {}).get("row", 1),
+                    column=issue.get("location", {}).get("column", 1),
+                    category=code,
+                    severity=self._get_severity(code),
+                    message=issue.get("message") or "Unknown Ruff finding",
                     analyzer=self.name,
                     confidence=0.95,
                 )

@@ -14,6 +14,9 @@ export default [
         },
         rules: {
             ...js.configs.recommended.rules,
+            // These layout-only rules have deterministic ESLint autofixes.
+            quotes: ["error", "single", { avoidEscape: true }],
+            eqeqeq: ["error", "smart"],
         },
     },
 ];

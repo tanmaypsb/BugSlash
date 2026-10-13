@@ -1,6 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FindingResponse, ScanDetailFindingResponse } from '../types/api';
 import { formatConfidence, getLanguageLabel } from '../utils/format';
+import { supportsFindingAutofix } from '../utils/fixCapabilities.js';
+import { applyFindingProposal, explainFinding, fixFinding, getUserFriendlyError, proposeFindingFix } from '../services/api';
+import type { FindingExplanationResponse, FixProposalResponse, FixResponse } from '../types/api';
 
 type Finding = FindingResponse | ScanDetailFindingResponse;
 
@@ -10,9 +13,64 @@ function hasFindingId(f: Finding): f is ScanDetailFindingResponse {
 
 interface FindingsListProps {
   findings: Finding[];
+  sourceFile?: File | null;
 }
 
-export function FindingsList({ findings }: FindingsListProps) {
+export function FindingsList({ findings, sourceFile = null }: FindingsListProps) {
+  const [pendingActions, setPendingActions] = useState<Record<string, string>>({});
+  const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
+  const [fixResults, setFixResults] = useState<Record<string, FixResponse>>({});
+  const [explanations, setExplanations] = useState<Record<string, FindingExplanationResponse>>({});
+  const [proposals, setProposals] = useState<Record<string, FixProposalResponse>>({});
+  const controllers = useRef(new Map<string, AbortController>());
+
+  useEffect(() => () => {
+    controllers.current.forEach((controller) => controller.abort());
+    controllers.current.clear();
+  }, []);
+
+  const runAction = async <T,>(
+    key: string,
+    label: string,
+    operation: (signal: AbortSignal) => Promise<T>,
+    onSuccess: (result: T) => void
+  ) => {
+    if (!sourceFile || pendingActions[key] || controllers.current.has(key)) return;
+    const controller = new AbortController();
+    controllers.current.set(key, controller);
+    setPendingActions((current) => ({ ...current, [key]: label }));
+    setActionErrors((current) => ({ ...current, [key]: '' }));
+    try {
+      const result = await operation(controller.signal);
+      if (!controller.signal.aborted && controllers.current.get(key) === controller) onSuccess(result);
+    } catch (error) {
+      if (!controller.signal.aborted && controllers.current.get(key) === controller) {
+        setActionErrors((current) => ({ ...current, [key]: getUserFriendlyError(error, 'fix') }));
+      }
+    } finally {
+      if (controllers.current.get(key) === controller) {
+        controllers.current.delete(key);
+        setPendingActions((current) => {
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      }
+    }
+  };
+
+  const downloadCorrectedSource = (result: FixResponse) => {
+    if (!result.success || typeof result.fixed_code !== 'string' || !sourceFile) return;
+    const baseName = sourceFile.name.replace(/\.[^.]+$/, '');
+    const suffix = sourceFile.name.toLowerCase().endsWith('.py') ? '.py' : sourceFile.name.match(/\.[^.]+$/)?.[0] ?? '.txt';
+    const mimeType = sourceFile.name.toLowerCase().endsWith('.py') ? 'text/x-python;charset=utf-8' : 'text/plain;charset=utf-8';
+    const url = URL.createObjectURL(new Blob([result.fixed_code], { type: mimeType }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${baseName}_fixed${suffix}`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
   const [severityFilter, setSeverityFilter] = useState('all');
   const [languageFilter, setLanguageFilter] = useState('all');
@@ -125,7 +183,9 @@ export function FindingsList({ findings }: FindingsListProps) {
         const isExpanded = expandedIndex === index;
         const key = hasFindingId(finding)
           ? `finding-${finding.id}`
-          : `finding-${index}`;
+          : `finding-${finding.file}:${finding.line}:${finding.category}:${index}`;
+        const isFixSupported = Boolean(sourceFile && supportsFindingAutofix(sourceFile.name, finding.language, finding.analyzer, finding.category));
+        const actionBusy = Boolean(pendingActions[key]);
 
         return (
           <div key={key} role="listitem">
@@ -208,6 +268,66 @@ export function FindingsList({ findings }: FindingsListProps) {
                   )}
                 </div>
                 <div className="finding-detail__message">{finding.message}</div>
+
+                {sourceFile && (
+                  <div className="finding-actions" aria-label="Finding actions">
+                    {isFixSupported && (
+                      <button className="btn btn--secondary btn--small" type="button" disabled={actionBusy}
+                        onClick={() => void runAction(key, 'fix', (signal) => fixFinding(sourceFile, finding, signal), (result) => setFixResults((current) => ({ ...current, [key]: result })))}>
+                        {pendingActions[key] === 'fix' ? 'Fixing finding...' : 'Fix This Bug'}
+                      </button>
+                    )}
+                    <button className="btn btn--secondary btn--small" type="button" disabled={actionBusy}
+                      onClick={() => void runAction(key, 'explain', (signal) => explainFinding(sourceFile, finding, signal), (result) => setExplanations((current) => ({ ...current, [key]: result })))}>
+                      {pendingActions[key] === 'explain' ? 'Explaining...' : 'Explain with Ollama'}
+                    </button>
+                    <button className="btn btn--secondary btn--small" type="button" disabled={actionBusy}
+                      onClick={() => void runAction(key, 'propose', (signal) => proposeFindingFix(sourceFile, finding, signal), (result) => setProposals((current) => ({ ...current, [key]: result })))}>
+                      {pendingActions[key] === 'propose' ? 'Preparing proposal...' : 'Suggest Complex Fix'}
+                    </button>
+                    {actionErrors[key] && <div className="error-banner" role="alert">{actionErrors[key]}</div>}
+
+                    {fixResults[key] && (
+                      <div className="finding-detail__message" aria-live="polite">
+                        <strong>{fixResults[key].status.replaceAll('_', ' ')}</strong>
+                        <p>{fixResults[key].message}</p>
+                        {fixResults[key].selected_resolved !== null && fixResults[key].selected_resolved !== undefined && <p>Selected finding: {fixResults[key].selected_resolved ? 'resolved' : 'still present'}</p>}
+                        <p>Original: {fixResults[key].original_count} · Resolved: {fixResults[key].resolved_count} · Remaining: {fixResults[key].remaining_count}</p>
+                        {fixResults[key].scope_note && <p>{fixResults[key].scope_note}</p>}
+                        {fixResults[key].remaining_findings.length > 0 && <ul>{fixResults[key].remaining_findings.map((item, resultIndex) => <li key={`${item.code}-${item.location.row}-${resultIndex}`}>{item.code ?? 'Finding'}: {item.message} (line {item.location.row})</li>)}</ul>}
+                        {fixResults[key].success && typeof fixResults[key].fixed_code === 'string' && <button className="btn btn--secondary btn--small" type="button" onClick={() => downloadCorrectedSource(fixResults[key])}>Download Fixed File</button>}
+                      </div>
+                    )}
+
+                    {explanations[key] && (
+                      <div className="finding-detail__message" aria-live="polite">
+                        <strong>Ollama explanation · generated interpretation</strong>
+                        <p><strong>What it means:</strong> {explanations[key].meaning}</p>
+                        <p><strong>Why reported:</strong> {explanations[key].why_reported}</p>
+                        <p><strong>Potential impact:</strong> {explanations[key].impact}</p>
+                        <p><strong>Suggested correction:</strong> {explanations[key].suggested_correction}</p>
+                        <p><strong>Correction type:</strong> {explanations[key].correction_kind.replaceAll('_', ' ')}</p>
+                        <pre>{explanations[key].source_context}</pre>
+                      </div>
+                    )}
+
+                    {proposals[key] && (
+                      <div className="finding-detail__message" aria-live="polite">
+                        <strong>{fixResults[key]?.proposal_accepted ? 'Proposal accepted' : 'Review required · proposal only · not applied'}</strong>
+                        <p>{proposals[key].summary}</p>
+                        {proposals[key].risks.length > 0 && <ul>{proposals[key].risks.map((risk, riskIndex) => <li key={riskIndex}>{risk}</li>)}</ul>}
+                        <pre>{proposals[key].diff}</pre>
+                        {finding.language.toLowerCase() === 'python' && finding.analyzer.toLowerCase() === 'ruff' ? (
+                          <button className="btn btn--secondary btn--small" type="button" disabled={actionBusy || Boolean(pendingActions[`${key}-apply`])}
+                            onClick={() => void runAction(`${key}-apply`, 'apply', (signal) => applyFindingProposal(sourceFile, finding, proposals[key], signal), (result) => setFixResults((current) => ({ ...current, [key]: result })))}>
+                            Accept and Verify Proposal
+                          </button>
+                        ) : <p>Proposal application is currently limited to Python, where BUGSLASH can verify the result locally.</p>}
+                      </div>
+                    )}
+                  </div>
+                )}
+
               </div>
             )}
           </div>

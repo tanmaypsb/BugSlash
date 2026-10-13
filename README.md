@@ -422,6 +422,19 @@ curl http://127.0.0.1:8000/health
 
 ---
 
+### Optional local LLM assistance (Ollama)
+
+Deterministic analysis and Python safe autofixes work without an LLM. To enable finding explanations and review-only complex-fix proposals during local development, install Ollama separately, pull a coding model such as `qwen2.5-coder:7b`, and start the local Ollama service. Then configure the backend process:
+
+```bash
+export OLLAMA_BASE_URL="http://127.0.0.1:11434"
+export OLLAMA_MODEL="qwen2.5-coder:7b"
+```
+
+The backend accepts Ollama only over a loopback HTTP address. It does not send source to a remote provider or require an API key. If Ollama or the model is unavailable, LLM endpoints return an explicit unavailable response; analysis and deterministic fixes continue to work. Proposal edits remain review-required and are never applied automatically. Proposal acceptance is currently verified for Python with Ruff re-analysis and syntax compilation; this does not run project tests.
+
+---
+
 ## Frontend
 
 Open another terminal:
@@ -780,10 +793,31 @@ When adding a new language:
 
 Copyright © 2026 Tanmay Pratap Singh. All rights reserved.
 
+Copyright © 2026 Tanmay Pratap Singh. All rights reserved.
+
 BUGSLASH is publicly available for viewing and educational/reference purposes.
 
 The source code may not be copied, modified, redistributed, republished, or used in other projects without explicit permission from the author.
 
 This repository is **source-available, not open source**.
 
-For permission to use, modify, or redistribute this project, please contact the author. 
+For permission to use, modify, or redistribute this project, please contact the author.
+
+
+## Multi-language automatic fixing
+
+The global and finding-level fix endpoints run language tools against a temporary copy, return complete corrected source, and re-analyze it before reporting a verified result. The uploaded file is never overwritten and uploaded programs are not run.
+
+Configured safe transformations:
+
+- Python: Ruff `--fix --fix-only`; Ruff safe-applicability rules only, followed by Ruff re-analysis and Python syntax compilation.
+- JavaScript and TypeScript: the backend-pinned ESLint config, with auto-fix restricted to ESLint rules categorized as layout-only. The config includes a deterministic single-quote layout rule. Other lint findings remain review items.
+- C: clang-tidy's braces-around-statements fix and clang-format (LLVM style), then clang-format verification and clang-tidy re-analysis.
+- C++: clang-tidy safe allowlist (`readability-braces-around-statements`) and clang-format (LLVM style), then formatter verification and analyzer re-run.
+- Java: clang-format (Google style) and SpotBugs re-analysis. SpotBugs findings have no automatic semantic fixer here; formatting does not imply a SpotBugs finding was fixed, and such findings remain review-required.
+- Go: `go fix` modernizers plus `gofmt`, with Staticcheck re-analysis and gofmt verification.
+- Rust: Clippy machine-applicable suggestions plus rustfmt, verified with Clippy and rustfmt. Standalone uploads are checked in a generated dependency-free Cargo manifest; source that requires external crates cannot be fully verified by this standalone flow.
+
+Analysis failures are returned as an explicit API error; they are not converted to empty findings. Go standalone analysis uses a temporary module and reports compiler diagnostics as findings; uploaded Go files that need third-party modules require project context that the standalone endpoint does not infer. Java standalone analysis uses the project's Maven configuration with only the uploaded source, so project-specific Java dependencies are not available. C and C++ verification covers clang-tidy analysis and formatting, not linking or running a complete project. A verified autofix means the configured source checks passed; it does not prove runtime behavior or execute tests. Finding comparisons are duplicate-aware and match analyzer code, message, and normalized source line; indistinguishable duplicate findings are counted, but exact identity across edits cannot always be established.
+
+The backend Dockerfile declares clang-tidy, clang-format, Java/Maven, Go (including gofmt), Rust/Cargo/Clippy/rustfmt, and Staticcheck. ESLint is installed by `npm ci` from the backend package lockfile; Ruff is installed from `requirements.txt`. Maven's existing SpotBugs plugin is configured in `pom.xml`. The image could not be built in the current environment because the Docker Desktop daemon is unavailable, so production tool availability is not yet verified. For a local Debian/Ubuntu environment, install the system tools from `backend/Dockerfile` and run `npm ci` in `backend`. The capability UI only enables extensions for these configured language families; unsupported extensions remain unavailable.

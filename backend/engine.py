@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from language_detector import LanguageDetector
+from models.analyzer_error import AnalyzerExecutionError
 
 from analyzer_models.python_analyzer import PythonAnalyzer
 from analyzer_models.javascript_analyzer import JavaScriptAnalyzer
@@ -22,6 +23,7 @@ class BugslashEngine:
             "python": PythonAnalyzer(),
             "javascript": JavaScriptAnalyzer(),
             "typescript": JavaScriptAnalyzer(),
+            "c": CppAnalyzer(),
             "cpp": CppAnalyzer(),
             "java": JavaAnalyzer(),
             "go": GoAnalyzer(),
@@ -45,12 +47,12 @@ class BugslashEngine:
         language = self.language_detector.detect(file_path)
 
         if language is None:
-            return []
+            raise ValueError(f"Unsupported source file type: {path.suffix or '(no extension)'}")
 
         analyzer = self.analyzers.get(language)
 
         if analyzer is None:
-            return []
+            raise AnalyzerExecutionError(language, "no analyzer is configured for this language")
 
         findings = analyzer.analyze(file_path)
 
@@ -105,7 +107,7 @@ class BugslashEngine:
             analyzer = self.analyzers.get(language)
 
             if analyzer is None:
-                continue
+                raise AnalyzerExecutionError(language, f"no analyzer is configured for {file_path.suffix}")
 
             result = self.analyze_file(
                 str(file_path)

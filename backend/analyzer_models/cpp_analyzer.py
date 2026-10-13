@@ -1,68 +1,48 @@
-import json
-import subprocess
+import re
 from pathlib import Path
 
 from models.finding import Finding
+from models.analyzer_error import AnalyzerExecutionError, run_analyzer
 
 
 class CppAnalyzer:
-
     def __init__(self):
         self.name = "clang-tidy"
 
     def analyze(self, file_path: str) -> list[Finding]:
-        file = Path(file_path)
-
-        result = subprocess.run(
-            [
-                "clang-tidy",
-                str(file),
-                "--checks=clang-analyzer-*,bugprone-*,performance-*,readability-*",
-                "--",
-                "-std=c++17",
-            ],
-            capture_output=True,
-            text=True,
+        file = Path(file_path).resolve()
+        is_c = file.suffix.lower() in {".c", ".h"}
+        language = "c" if is_c else "cpp"
+        flags = ["-x", "c", "-std=c11"] if is_c else ["-x", "c++", "-std=c++17"]
+        result = run_analyzer(
+            self.name,
+            ["clang-tidy", str(file), "--checks=clang-analyzer-*,bugprone-*,performance-*,readability-*", "--", *flags],
+            timeout=90,
+            expected=(0, 1),
         )
 
         findings = []
-
-        for line in result.stdout.splitlines():
-
-            if ": warning:" not in line:
+        diagnostics = (result.stdout + "\n" + result.stderr).splitlines()
+        pattern = re.compile(r"^(.+):(\d+):(\d+): (warning|error): (.*?)(?: \[([^\]]+)\])?$")
+        for line in diagnostics:
+            match = pattern.match(line.strip())
+            if not match:
                 continue
-
-            try:
-                location, message = line.split(": warning:", 1)
-
-                parts = location.split(":")
-
-                file_name = ":".join(parts[:-2])
-                line_number = int(parts[-2])
-                column_number = int(parts[-1])
-
-                if "[" in message and "]" in message:
-                    message_text = message.split("[", 1)[0].strip()
-                    category = message.split("[", 1)[1].split("]", 1)[0]
-                else:
-                    message_text = message.strip()
-                    category = "unknown"
-
-                findings.append(
-                    Finding(
-                        language="cpp",
-                        file=file_name,
-                        line=line_number,
-                        column=column_number,
-                        category=category,
-                        severity="medium",
-                        message=message_text,
-                        analyzer=self.name,
-                        confidence=0.90,
-                    )
+            filename, row, column, level, message, category = match.groups()
+            findings.append(
+                Finding(
+                    language=language,
+                    file=filename,
+                    line=int(row),
+                    column=int(column),
+                    category=category or ("clang-diagnostic-error" if level == "error" else "unknown"),
+                    severity="high" if level == "error" else "medium",
+                    message=message.strip(),
+                    analyzer=self.name,
+                    confidence=0.90,
                 )
-
-            except (ValueError, IndexError):
-                continue
-
+            )
+        if result.returncode != 0 and not findings:
+            detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+            raise AnalyzerExecutionError(self.name, detail[:1000])
         return findings

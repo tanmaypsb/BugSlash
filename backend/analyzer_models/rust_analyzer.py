@@ -1,129 +1,76 @@
 import json
-import subprocess
+import re
+import shutil
+import tempfile
 from pathlib import Path
 
 from models.finding import Finding
+from models.analyzer_error import AnalyzerExecutionError, run_analyzer
 
 
 class RustAnalyzer:
-
     def __init__(self):
         self.name = "clippy"
 
     def analyze(self, file_path: str) -> list[Finding]:
-        file = Path(file_path)
+        source = Path(file_path).resolve()
+        if shutil.which("cargo") is None:
+            raise AnalyzerExecutionError(self.name, "required executable 'cargo' is unavailable")
 
-        cargo_toml = self._find_cargo_project(file)
-
-        if cargo_toml is None:
-            return []
-
-        result = subprocess.run(
-            [
-                "cargo",
-                "clippy",
-                "--manifest-path",
-                str(cargo_toml),
-                "--message-format=json",
-            ],
-            capture_output=True,
-            text=True,
-        )
-
-        findings = []
-
-        for line in result.stdout.splitlines():
-
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            if data.get("reason") != "compiler-message":
-                continue
-
-            message = data.get("message", {})
-
-            level = message.get("level")
-
-            if level not in ("error", "warning"):
-                continue
-
-            spans = message.get("spans", [])
-
-            primary_span = None
-
-            for span in spans:
-                if span.get("is_primary"):
-                    primary_span = span
-                    break
-
-            if primary_span is None and spans:
-                primary_span = spans[0]
-
-            if primary_span is None:
-                continue
-
-            code_info = message.get("code") or {}
-
-            category = code_info.get(
-                "code",
-                "unknown"
+        with tempfile.TemporaryDirectory(prefix="bugslash-rust-analysis-") as temp_dir:
+            workspace = Path(temp_dir)
+            source_dir = workspace / "src"
+            source_dir.mkdir()
+            is_binary = bool(re.search(r"\bfn\s+main\s*\(", source.read_text(encoding="utf-8")))
+            copied = source_dir / ("main.rs" if is_binary else "lib.rs")
+            shutil.copyfile(source, copied)
+            manifest = workspace / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname = "bugslash_upload"\nversion = "0.1.0"\nedition = "2021"\n',
+                encoding="utf-8",
+            )
+            result = run_analyzer(
+                self.name,
+                ["cargo", "clippy", "--manifest-path", str(manifest), "--message-format=json"],
+                cwd=workspace,
+                timeout=180,
+                expected=(0, 1, 101),
             )
 
+        findings = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise AnalyzerExecutionError(self.name, "returned malformed Cargo JSON output") from exc
+            if item.get("reason") != "compiler-message":
+                continue
+            message = item.get("message", {})
+            level = message.get("level")
+            if level not in {"warning", "error"}:
+                continue
+            spans = message.get("spans") or []
+            primary = next((span for span in spans if span.get("is_primary")), spans[0] if spans else {})
+            code = message.get("code") or {}
             findings.append(
                 Finding(
                     language="rust",
-                    file=primary_span.get(
-                        "file_name",
-                        str(file)
-                    ),
-                    line=primary_span.get(
-                        "line_start",
-                        1
-                    ),
-                    column=primary_span.get(
-                        "column_start",
-                        1
-                    ),
-                    category=category,
+                    file=str(source),
+                    line=primary.get("line_start", 1),
+                    column=primary.get("column_start", 1),
+                    category=code.get("code") or "rustc-diagnostic",
                     severity=self._get_severity(level),
-                    message=message.get(
-                        "message",
-                        "Unknown Rust issue"
-                    ),
+                    message=message.get("message", "Unknown Rust analyzer finding"),
                     analyzer=self.name,
                     confidence=0.95,
                 )
             )
-
+        if result.returncode != 0 and not findings:
+            detail = (result.stderr or result.stdout or f"exit code {result.returncode}").strip()
+            raise AnalyzerExecutionError(self.name, detail[:1000])
         return findings
 
-    def _find_cargo_project(
-        self,
-        file: Path
-    ) -> Path | None:
-
-        current = file.resolve()
-
-        if current.is_file():
-            current = current.parent
-
-        for directory in [current, *current.parents]:
-
-            cargo_toml = directory / "Cargo.toml"
-
-            if cargo_toml.exists():
-                return cargo_toml
-
-        return None
-
     def _get_severity(self, level: str) -> str:
-
-        if level == "error":
-            return "high"
-
-        if level == "warning":
-            return "medium"
-
-        return "low"
+        return "high" if level == "error" else "medium" if level == "warning" else "low"

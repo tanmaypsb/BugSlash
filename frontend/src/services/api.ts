@@ -1,9 +1,17 @@
+export { getUserFriendlyError } from './apiErrors.js';
 import type {
   HealthResponse,
   ScanHistoryResponse,
   ScanDetailResponse,
   FileAnalysisResponse,
   ProjectAnalysisResponse,
+  FixFindingResponse,
+  FixResponse,
+  FixStatus,
+  FindingExplanationResponse,
+  FixProposalResponse,
+  FindingResponse,
+  ScanDetailFindingResponse,
 } from '../types/api';
 
 const API_BASE_URL =
@@ -35,6 +43,57 @@ function isFinding(value: unknown): boolean {
     isString(value.message) &&
     isString(value.analyzer) &&
     isNumber(value.confidence)
+  );
+}
+
+function isFixFinding(value: unknown): value is FixFindingResponse {
+  return (
+    isRecord(value) &&
+    (value.code === null || isString(value.code)) &&
+    isString(value.message) &&
+    isString(value.filename) &&
+    isRecord(value.location) &&
+    isNumber(value.location.row) &&
+    isNumber(value.location.column)
+  );
+}
+
+const FIX_STATUSES: FixStatus[] = [
+  'FIX_VERIFIED',
+  'PARTIALLY_FIXED',
+  'NO_CHANGES',
+  'VERIFICATION_INCOMPLETE',
+  'FIX_FAILED',
+  'REVIEW_REQUIRED',
+];
+
+function isFixResponse(value: unknown): value is FixResponse {
+  return (
+    isRecord(value) &&
+    typeof value.success === 'boolean' &&
+    isString(value.verification_status) &&
+    isNumber(value.introduced_count) &&
+    isString(value.status) &&
+    FIX_STATUSES.includes(value.status as FixStatus) &&
+    isString(value.message) &&
+    typeof value.fixed === 'boolean' &&
+    isNumber(value.original_count) &&
+    isNumber(value.resolved_count) &&
+    isNumber(value.remaining_count) &&
+    Array.isArray(value.resolved_codes) &&
+    value.resolved_codes.every(isString) &&
+    Array.isArray(value.original_findings) &&
+    value.original_findings.every(isFixFinding) &&
+    Array.isArray(value.resolved_findings) &&
+    value.resolved_findings.every(isFixFinding) &&
+    Array.isArray(value.remaining_findings) &&
+    value.remaining_findings.every(isFixFinding) &&
+    Array.isArray(value.introduced_findings) &&
+    value.introduced_findings.every(isFixFinding) &&
+    isString(value.filename) &&
+    (isString(value.fixed_code) || value.fixed_code === null) &&
+    (value.selected_resolved === undefined || value.selected_resolved === null || typeof value.selected_resolved === 'boolean') &&
+    (value.scope_note === undefined || value.scope_note === null || isString(value.scope_note))
   );
 }
 
@@ -257,6 +316,98 @@ export async function analyzeFile(
   );
 }
 
+export async function fixFile(
+  file: File,
+  signal?: AbortSignal
+): Promise<FixResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  return request<FixResponse>(
+    "/fix",
+    {
+      method: "POST",
+      body: formData,
+    },
+    120000,
+    signal,
+    isFixResponse
+  );
+}
+
+type CurrentFinding = FindingResponse | ScanDetailFindingResponse;
+
+function findingForm(file: File, finding: CurrentFinding): FormData {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('finding', JSON.stringify({
+    language: finding.language,
+    file: finding.file,
+    line: finding.line,
+    column: finding.column,
+    category: finding.category,
+    severity: finding.severity,
+    message: finding.message,
+    analyzer: finding.analyzer,
+    confidence: finding.confidence,
+  }));
+  return formData;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isString);
+}
+
+function isFindingExplanation(value: unknown): value is FindingExplanationResponse {
+  return isRecord(value) && isString(value.provider) && isString(value.model) &&
+    isFinding(value.finding) && isString(value.source_context) && isString(value.meaning) &&
+    isString(value.why_reported) && isString(value.impact) && isString(value.suggested_correction) &&
+    ['deterministic', 'uncertain', 'review_required'].includes(String(value.correction_kind));
+}
+
+function isFixProposal(value: unknown): value is FixProposalResponse {
+  return isRecord(value) && isString(value.provider) && isString(value.model) && isFinding(value.finding) &&
+    isString(value.summary) && isStringArray(value.risks) && isString(value.diff) &&
+    isString(value.proposed_code) && isString(value.source_sha256) &&
+    value.review_required === true && value.status === 'PROPOSAL_READY';
+}
+
+export async function fixFinding(
+  file: File,
+  finding: CurrentFinding,
+  signal?: AbortSignal
+): Promise<FixResponse> {
+  return request<FixResponse>('/fix/finding', { method: 'POST', body: findingForm(file, finding) }, 120000, signal, isFixResponse);
+}
+
+export async function explainFinding(
+  file: File,
+  finding: CurrentFinding,
+  signal?: AbortSignal
+): Promise<FindingExplanationResponse> {
+  return request<FindingExplanationResponse>('/llm/explain', { method: 'POST', body: findingForm(file, finding) }, 75000, signal, isFindingExplanation);
+}
+
+export async function proposeFindingFix(
+  file: File,
+  finding: CurrentFinding,
+  signal?: AbortSignal
+): Promise<FixProposalResponse> {
+  return request<FixProposalResponse>('/fix/propose', { method: 'POST', body: findingForm(file, finding) }, 75000, signal, isFixProposal);
+}
+
+export async function applyFindingProposal(
+  file: File,
+  finding: CurrentFinding,
+  proposal: FixProposalResponse,
+  signal?: AbortSignal
+): Promise<FixResponse> {
+  const formData = findingForm(file, finding);
+  formData.append('proposed_code', proposal.proposed_code);
+  formData.append('source_sha256', proposal.source_sha256);
+  return request<FixResponse>('/fix/proposal/apply', { method: 'POST', body: formData }, 120000, signal, isFixResponse);
+}
+
 export async function analyzeProject(
   file: File,
   signal?: AbortSignal
@@ -274,36 +425,4 @@ export async function analyzeProject(
     signal,
     isProjectAnalysisResponse
   );
-}
-
-export function getUserFriendlyError(
-  error: unknown,
-  context: 'analysis' | 'request' = 'request'
-): string {
-  if (error instanceof ApiError) {
-    switch (error.status) {
-      case 400:
-        return context === 'analysis'
-          ? 'Invalid file or analysis request. Check the file type and try again.'
-          : 'The request was invalid. Please check the selected item and try again.';
-      case 404:
-        return 'The requested resource was not found.';
-      case 422:
-        return context === 'analysis'
-          ? 'The API could not accept this file. Check the file type and try again.'
-          : 'The API could not validate this request.';
-      case 500:
-        return context === 'analysis'
-          ? 'Analysis failed. The BUGSLASH API responded but could not complete the analysis.'
-          : 'Unexpected server error. Please try again later.';
-      default:
-        return `BUGSLASH API returned HTTP ${error.status}. Please try again.`;
-    }
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return 'An unexpected error occurred.';
 }

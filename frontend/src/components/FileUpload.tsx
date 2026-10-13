@@ -20,15 +20,17 @@ type UploadState =
 
 interface AnalysisResult {
   type: 'file' | 'project';
+  sourceFile: File;
   fileResponse?: FileAnalysisResponse;
   projectResponse?: ProjectAnalysisResponse;
 }
 
 interface FileUploadProps {
   onAnalysisComplete?: (result: AnalysisResult) => void;
+  onFileSelected?: (file: File | null) => void;
 }
 
-export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
+export function FileUpload({ onAnalysisComplete, onFileSelected }: FileUploadProps) {
   const [file, setFile] = useState<File | null>(null);
   const [state, setState] = useState<UploadState>('idle');
   const [statusMessage, setStatusMessage] = useState('');
@@ -39,6 +41,7 @@ export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
 
   const resetState = useCallback(() => {
     setFile(null);
+    onFileSelected?.(null);
     setState('idle');
     setStatusMessage('');
     setErrorMessage('');
@@ -46,7 +49,7 @@ export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
       abortRef.current.abort();
       abortRef.current = null;
     }
-  }, []);
+  }, [onFileSelected]);
 
   const validateFile = (f: File): string | null => {
     const name = f.name.toLowerCase();
@@ -67,14 +70,18 @@ export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
   };
 
   const handleFileSelect = (f: File) => {
+    abortRef.current?.abort();
+    abortRef.current = null;
     const validationError = validateFile(f);
     if (validationError) {
+      onFileSelected?.(null);
       setErrorMessage(validationError);
       setState('error');
       setFile(null);
       return;
     }
     setFile(f);
+    onFileSelected?.(f);
     setState('selected');
     setErrorMessage('');
   };
@@ -94,7 +101,7 @@ export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
   };
 
   const handleAnalyze = async () => {
-    if (!file) return;
+    if (!file || abortRef.current) return;
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -108,6 +115,7 @@ export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
       await new Promise<void>((resolve) => {
         window.requestAnimationFrame(() => resolve());
       });
+      if (controller.signal.aborted || abortRef.current !== controller) return;
 
       setState('analyzing');
       setStatusMessage(
@@ -116,19 +124,21 @@ export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
 
       if (isProject) {
         const response = await analyzeProject(file, controller.signal);
+        if (controller.signal.aborted || abortRef.current !== controller) return;
         setState('success');
         setStatusMessage(
           `Analysis complete. ${response.files_analyzed} file${response.files_analyzed !== 1 ? 's' : ''} analyzed.`
         );
-        onAnalysisComplete?.({ type: 'project', projectResponse: response });
+        onAnalysisComplete?.({ type: 'project', sourceFile: file, projectResponse: response });
       } else {
         const response = await analyzeFile(file, controller.signal);
+        if (controller.signal.aborted || abortRef.current !== controller) return;
         setState('success');
         const count = response.findings.length;
         setStatusMessage(
           `Analysis complete. ${count} finding${count !== 1 ? 's' : ''} detected.`
         );
-        onAnalysisComplete?.({ type: 'file', fileResponse: response });
+        onAnalysisComplete?.({ type: 'file', sourceFile: file, fileResponse: response });
       }
     } catch (err) {
       if (controller.signal.aborted) return;
@@ -136,7 +146,7 @@ export function FileUpload({ onAnalysisComplete }: FileUploadProps) {
       setErrorMessage(getUserFriendlyError(err, 'analysis'));
       setStatusMessage('');
     } finally {
-      abortRef.current = null;
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 

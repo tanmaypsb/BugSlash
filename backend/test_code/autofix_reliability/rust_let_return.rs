@@ -1,0 +1,1 @@
+pub fn answer() -> i32 { let value = 1; value }

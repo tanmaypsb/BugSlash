@@ -1,8 +1,7 @@
-import json
-import subprocess
 from pathlib import Path
 
 from models.finding import Finding
+from models.analyzer_error import parse_json_output, run_analyzer
 
 
 class JavaScriptAnalyzer:
@@ -18,25 +17,17 @@ class JavaScriptAnalyzer:
             else "javascript"
         )
 
-        result = subprocess.run(
-            [
-                "npx",
-                "eslint",
-                str(file),
-                "--format",
-                "json",
-            ],
-            capture_output=True,
-            text=True,
+        backend = Path(__file__).resolve().parents[1]
+        eslint = backend / "node_modules" / ".bin" / "eslint"
+        executable = str(eslint) if eslint.exists() else "eslint"
+        result = run_analyzer(
+            self.name,
+            [executable, str(file), "--config", str(backend / "eslint.config.js"), "--format", "json"],
+            cwd=backend,
+            timeout=45,
+            expected=(0, 1),
         )
-
-        if not result.stdout.strip():
-            return []
-
-        try:
-            data = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            return []
+        data = parse_json_output(self.name, result.stdout, expected_type=list)
 
         findings = []
 
@@ -47,13 +38,13 @@ class JavaScriptAnalyzer:
                     Finding(
                         language=language,
                         file=str(file),
-                        line=issue["line"],
-                        column=issue["column"],
-                        category=issue["ruleId"] or "unknown",
+                        line=issue.get("line") or 1,
+                        column=issue.get("column") or 1,
+                        category=issue.get("ruleId") or "unknown",
                         severity=self._get_severity(
-                            issue["severity"]
+                            issue.get("severity", 1)
                         ),
-                        message=issue["message"],
+                        message=issue.get("message") or "Unknown ESLint finding",
                         analyzer=self.name,
                         confidence=0.95,
                     )

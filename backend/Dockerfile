@@ -11,12 +11,13 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     clang \
     clang-tidy \
+    clang-format \
     default-jdk \
     maven \
     golang \
     rustc \
+    rustfmt \
     cargo \
-    rust-clippy \
     rust-clippy \
     nodejs \
     npm \

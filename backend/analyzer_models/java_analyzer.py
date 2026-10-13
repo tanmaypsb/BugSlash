@@ -1,112 +1,66 @@
-import subprocess
+import shutil
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from models.finding import Finding
+from models.analyzer_error import AnalyzerExecutionError, run_analyzer
 
 
 class JavaAnalyzer:
-
     def __init__(self):
         self.name = "spotbugs"
 
     def analyze(self, file_path: str) -> list[Finding]:
-        file = Path(file_path)
+        source = Path(file_path).resolve()
+        backend = Path(__file__).resolve().parents[1]
+        if shutil.which("mvn") is None:
+            raise AnalyzerExecutionError(self.name, "required executable 'mvn' is unavailable")
 
-        # Make sure the Java source is available to Maven
-        maven_file = Path("src/main/java") / file.name
-        maven_file.parent.mkdir(parents=True, exist_ok=True)
-
-        maven_file.write_text(
-            file.read_text()
-        )
-
-        # Compile Java and run SpotBugs
-        result = subprocess.run(
-            [
-                "mvn",
-                "clean",
-                "compile",
-                "spotbugs:spotbugs",
-                "-q",
-            ],
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            return []
-
-        xml_file = Path("target/spotbugsXml.xml")
-
-        if not xml_file.exists():
-            return []
-
-        try:
-            root = ET.parse(xml_file).getroot()
-        except ET.ParseError:
-            return []
+        with tempfile.TemporaryDirectory(prefix="bugslash-java-analysis-") as temp_dir:
+            workspace = Path(temp_dir)
+            shutil.copyfile(backend / "pom.xml", workspace / "pom.xml")
+            java_dir = workspace / "src" / "main" / "java"
+            java_dir.mkdir(parents=True)
+            copied = java_dir / source.name
+            shutil.copyfile(source, copied)
+            run_analyzer(
+                self.name,
+                ["mvn", "-q", "-f", str(workspace / "pom.xml"), "clean", "compile", "spotbugs:spotbugs"],
+                cwd=workspace,
+                timeout=180,
+            )
+            report = workspace / "target" / "spotbugsXml.xml"
+            if not report.is_file():
+                raise AnalyzerExecutionError(self.name, "SpotBugs did not produce its XML report")
+            try:
+                root = ET.parse(report).getroot()
+            except ET.ParseError as exc:
+                raise AnalyzerExecutionError(self.name, "SpotBugs produced malformed XML") from exc
 
         findings = []
-
         for bug in root.findall("BugInstance"):
-
-            bug_type = bug.get("type", "unknown")
+            code = bug.get("type", "unknown")
             priority = bug.get("priority", "3")
-
-            short_message = bug.findtext(
-                "ShortMessage",
-                default="Unknown Java issue"
-            )
-
-            long_message = bug.findtext(
-                "LongMessage",
-                default=short_message
-            )
-
-            source_line = bug.find(
-                ".//SourceLine[@role='SOURCE_LINE_DEREF']"
-            )
-
+            short = bug.findtext("ShortMessage", default="Unknown Java issue")
+            message = bug.findtext("LongMessage", default=short)
+            source_line = bug.find(".//SourceLine[@role='SOURCE_LINE_DEREF']")
             if source_line is None:
                 source_line = bug.find(".//SourceLine")
-
-            if source_line is None:
-                continue
-
-            source_file = source_line.get(
-                "sourcefile",
-                file.name
-            )
-
-            line = int(
-                source_line.get("start", "1")
-            )
-
-            severity = self._get_severity(priority)
-
             findings.append(
                 Finding(
                     language="java",
-                    file=source_file,
-                    line=line,
+                    file=str(source),
+                    line=int(source_line.get("start", "1")) if source_line is not None else 1,
                     column=0,
-                    category=bug_type,
-                    severity=severity,
-                    message=long_message,
+                    category=code,
+                    severity=self._get_severity(priority),
+                    message=message,
                     analyzer=self.name,
                     confidence=0.95,
                 )
             )
-
         return findings
 
     def _get_severity(self, priority: str) -> str:
-
-        if priority == "1":
-            return "high"
-
-        if priority == "2":
-            return "medium"
-
-        return "low"
+        return {"1": "high", "2": "medium"}.get(priority, "low")

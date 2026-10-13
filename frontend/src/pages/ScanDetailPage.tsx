@@ -163,6 +163,7 @@ export function ScanDetailPage() {
         <div className="section-header">
           <h2>Findings</h2>
         </div>
+        {scan.findings.length > 0 && <p>Historical scans do not retain the original source. Re-upload a supported source file to run autofix.</p>}
         <FindingsList findings={scan.findings} />
       </div>
     </>
